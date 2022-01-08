@@ -6,6 +6,8 @@ const Client = @import("client.zig").Client;
 const webhook = @import("webhook.zig");
 const sqlite = @import("sqlite.zig");
 
+const DATABASE_VERSION_CODE = 1;
+
 const CREATE_TABLES =
     \\ CREATE TABLE VERSION
     \\ (
@@ -100,7 +102,7 @@ pub fn main() anyerror!void {
         };
     }
 
-    try db.exec(CREATE_TABLES);
+    try createTables(&db);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var allocator = arena.allocator();
@@ -121,6 +123,28 @@ pub fn main() anyerror!void {
 
     try Client.cleanup();
     arena.deinit();
+}
+
+pub fn createTables(db: *sqlite.Database) anyerror!void {
+    var stm = db.prepare("SELECT versionCode FROM VERSION ORDER BY versionCode DESC") catch {
+        std.log.debug("Creating database", .{});
+
+        try db.exec(CREATE_TABLES);
+        return;
+    };
+
+    if (stm.next()) {
+        var code: isize = 0;
+
+        try stm.fetch(.{&code});
+
+        if (DATABASE_VERSION_CODE == code) {
+            std.log.debug("Database already created", .{});
+            stm.finalize();
+            return;
+        }
+    }
+    stm.finalize();
 }
 
 pub fn updateAlert(allocator: std.mem.Allocator, client: *Client, config: *Config, headers: *std.StringHashMap([]const u8)) anyerror!void {

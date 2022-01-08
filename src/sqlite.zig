@@ -12,7 +12,7 @@ pub const Database = struct {
 
         var rc = sqlite3.sqlite3_open(path, &ptr);
         if (rc > 0) {
-            std.log.err("Can't open database: {s}\n", .{sqlite3.sqlite3_errmsg(ptr)});
+            std.log.err("Can't open database: {s}", .{sqlite3.sqlite3_errmsg(ptr)});
             return error.FailedToOpenDatabase;
         }
 
@@ -24,7 +24,7 @@ pub const Database = struct {
     pub fn close(self: *@This()) anyerror!void {
         var rc = sqlite3.sqlite3_close(self.db);
         if (rc > 0) {
-            std.log.err("Can't close database: {s}\n", .{sqlite3.sqlite3_errmsg(self.db)});
+            std.log.err("Can't close database: {s}", .{sqlite3.sqlite3_errmsg(self.db)});
         }
 
         self.db = null;
@@ -35,7 +35,7 @@ pub const Database = struct {
         var rc = sqlite3.sqlite3_prepare_v2(self.db, query.ptr, @intCast(c_int, query.len), &res, 0);
 
         if (rc != sqlite3.SQLITE_OK) {
-            std.log.err("failed to fetch data: {s}\n", .{sqlite3.sqlite3_errmsg(self.db)});
+            std.log.err("failed to fetch data: {s}", .{sqlite3.sqlite3_errmsg(self.db)});
             return error.FailedToFetchData;
         }
 
@@ -53,7 +53,7 @@ pub const Database = struct {
 
         var rc = sqlite3.sqlite3_exec(self.db, queries, null, null, &errorMsg);
         if (rc != sqlite3.SQLITE_OK) {
-            std.log.err("failed to execute queries: {s}\n", .{errorMsg}); // TODO
+            std.log.err("failed to execute queries: {s}", .{errorMsg}); // TODO
             sqlite3.sqlite3_free(errorMsg);
             return error.FailedToExecuteQueries;
         }
@@ -70,14 +70,14 @@ pub const Statement = struct {
             .Float, .ComptimeFloat => {
                 var rc = sqlite3.sqlite3_bind_double(self.statement, @intCast(c_int, index), value);
                 if (rc != sqlite3.SQLITE_OK) {
-                    std.log.err("failed to bind parameter: {s}\n", .{sqlite3.sqlite3_errmsg(self.db.db)});
+                    std.log.err("failed to bind parameter: {s}", .{sqlite3.sqlite3_errmsg(self.db.db)});
                     return error.FailedToBindParameter;
                 }
             },
             .Int, .ComptimeInt => {
                 var rc = sqlite3.sqlite3_bind_int(self.statement, @intCast(c_int, index), value);
                 if (rc != sqlite3.SQLITE_OK) {
-                    std.log.err("failed to bind parameter: {s}\n", .{sqlite3.sqlite3_errmsg(self.db.db)});
+                    std.log.err("failed to bind parameter: {s}", .{sqlite3.sqlite3_errmsg(self.db.db)});
                     return error.FailedToBindParameter;
                 }
             },
@@ -87,14 +87,14 @@ pub const Statement = struct {
                         U8ArrayTypeTag.text => {
                             var rc = sqlite3.sqlite3_bind_text(self.statement, @intCast(c_int, index), value.text.ptr, @intCast(c_int, value.text.len), sqlite3.SQLITE_TRANSIENT);
                             if (rc != sqlite3.SQLITE_OK) {
-                                std.log.err("failed to bind parameter: {s}\n", .{sqlite3.sqlite3_errmsg(self.db.db)});
+                                std.log.err("failed to bind parameter: {s}", .{sqlite3.sqlite3_errmsg(self.db.db)});
                                 return error.FailedToBindParameter;
                             }
                         },
                         U8ArrayTypeTag.bytes => {
                             var rc = sqlite3.sqlite3_bind_blob(self.statement, @intCast(c_int, index), value.bytes.ptr, @intCast(c_int, value.bytes.len), sqlite3.SQLITE_TRANSIENT);
                             if (rc != sqlite3.SQLITE_OK) {
-                                std.log.err("failed to bind parameter: {s}\n", .{sqlite3.sqlite3_errmsg(self.db.db)});
+                                std.log.err("failed to bind parameter: {s}", .{sqlite3.sqlite3_errmsg(self.db.db)});
                                 return error.FailedToBindParameter;
                             }
                         },
