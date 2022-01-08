@@ -168,7 +168,7 @@ pub const Statement = struct {
                                             var blob = @ptrCast([*]const u8, blob_ptr);
                                             var size = sqlite3.sqlite3_column_bytes(self.statement, @intCast(c_int, index));
 
-                                            arg.bytes = blob[0..@intCast(usize, size)]; // TODO TEST
+                                            arg.bytes = blob[0..@intCast(usize, size)];
                                         }
                                     },
                                 }

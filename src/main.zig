@@ -6,6 +6,65 @@ const Client = @import("client.zig").Client;
 const webhook = @import("webhook.zig");
 const sqlite = @import("sqlite.zig");
 
+const CREATE_TABLES =
+    \\ CREATE TABLE VERSION
+    \\ (
+    \\     versionCode INTEGER
+    \\ );
+    \\ 
+    \\ INSERT INTO VERSION(versionCode)
+    \\ VALUES (1);
+    \\ 
+    \\ CREATE TABLE STREAMER
+    \\ (
+    \\     idStreamer    TEXT PRIMARY KEY NOT NULL,
+    \\     loginStreamer TEXT             NOT NULL,
+    \\     nameStreamer  TEXT             NOT NULL
+    \\ );
+    \\ 
+    \\ CREATE TABLE STREAM
+    \\ (
+    \\     idStream       TEXT PRIMARY KEY NOT NULL,
+    \\     idStreamer     TEXT             NOT NULL,
+    \\     isMatureStream BOOLEAN          NOT NULL DEFAULT 'F',
+    \\     CONSTRAINT FK_STREAM_STREAMER_ID FOREIGN KEY (idStreamer) REFERENCES STREAMER (idStreamer)
+    \\ );
+    \\ 
+    \\ CREATE TABLE VIEWER_COUNT_STREAM
+    \\ (
+    \\     viewerCount     INTEGER NOT NULL,
+    \\     dateViewerCount DATE    NOT NULL,
+    \\     idStream        TEXT    NOT NULL,
+    \\     PRIMARY KEY (dateViewerCount, idStream),
+    \\     CONSTRAINT FK_VIEWER_COUNT_STREAM_ID FOREIGN KEY (idStream) REFERENCES STREAM (idStream)
+    \\ );
+    \\ 
+    \\ CREATE TABLE NAME_STREAM
+    \\ (
+    \\     nameStream     TEXT NOT NULL,
+    \\     dateNameStream DATE NOT NULL,
+    \\     idStream       TEXT NOT NULL,
+    \\     PRIMARY KEY (dateNameStream, idStream),
+    \\     CONSTRAINT FK_NAME_STREAM_STREAM_ID FOREIGN KEY (idStream) REFERENCES STREAM (idStream)
+    \\ );
+    \\ 
+    \\ CREATE TABLE GAME
+    \\ (
+    \\     gameId   TEXT NOT NULL PRIMARY KEY,
+    \\     gameName TEXT
+    \\ );
+    \\ 
+    \\ CREATE TABLE IS_STREAMING_GAME
+    \\ (
+    \\     gameId         TEXT NOT NULL,
+    \\     streamId       TEXT NOT NULL,
+    \\     dateGameStream DATE NOT NULL,
+    \\     PRIMARY KEY (gameId, streamId, dateGameStream),
+    \\     CONSTRAINT FK_GAME_STREAM_GAME_ID FOREIGN KEY (gameId) REFERENCES GAME (gameId),
+    \\     CONSTRAINT FK_GAME_STREAM_STREAM_ID FOREIGN KEY (streamId) REFERENCES STREAM (idStream)
+    \\ );
+;
+
 const Config = struct {
     token: []const u8,
     client_id: []const u8,
@@ -34,12 +93,14 @@ const User = struct {
 };
 
 pub fn main() anyerror!void {
-    var db = try sqlite.Database.open("a.db");
+    var db = try sqlite.Database.open("data.db");
     defer {
         _ = db.close() catch |e| {
             std.log.err("Failed to close db : {}", .{e});
         };
     }
+
+    try db.exec(CREATE_TABLES);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var allocator = arena.allocator();
