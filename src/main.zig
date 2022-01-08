@@ -4,6 +4,7 @@ const json = std.json;
 const twitch = @import("twitch.zig");
 const Client = @import("client.zig").Client;
 const webhook = @import("webhook.zig");
+const sqlite = @import("sqlite.zig");
 
 const Config = struct {
     token: []const u8,
@@ -33,6 +34,13 @@ const User = struct {
 };
 
 pub fn main() anyerror!void {
+    var db = try sqlite.Database.open("a.db");
+    defer {
+        _ = db.close() catch |e| {
+            std.log.err("Failed to close db : {}", .{e});
+        };
+    }
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var allocator = arena.allocator();
 
@@ -51,11 +59,10 @@ pub fn main() anyerror!void {
     client.deinit();
 
     try Client.cleanup();
-
     arena.deinit();
 }
 
-pub fn updateAlert(allocator: std.mem.Allocator, client: *Client, config: *Config, headers: *std.StringHashMap([]const u8)) anyerror!void{
+pub fn updateAlert(allocator: std.mem.Allocator, client: *Client, config: *Config, headers: *std.StringHashMap([]const u8)) anyerror!void {
     var request = std.ArrayList(u8).init(allocator);
 
     try request.appendSlice("https://api.twitch.tv/helix/streams?");

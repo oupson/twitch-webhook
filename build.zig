@@ -16,6 +16,7 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkLibC();
 
     exe.linkSystemLibrary("curl");
+    exe.linkSystemLibrary("sqlite3");
 
     exe.setTarget(target);
     exe.setBuildMode(mode);
@@ -34,6 +35,13 @@ pub fn build(b: *std.build.Builder) void {
     exe_tests.setTarget(target);
     exe_tests.setBuildMode(mode);
 
+    const sqlite_tests = b.addTest("src/sqlite.zig");
+    sqlite_tests.setTarget(target);
+    sqlite_tests.setBuildMode(mode);
+    sqlite_tests.linkSystemLibrary("sqlite3");
+    sqlite_tests.linkLibC();
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&exe_tests.step);
+    test_step.dependOn(&sqlite_tests.step);
 }
