@@ -6,7 +6,7 @@ const Client = @import("client.zig").Client;
 const webhook = @import("webhook.zig");
 const sqlite = @import("sqlite.zig");
 
-const DATABASE_VERSION_CODE = 1;
+const DATABASE_VERSION_CODE = 2;
 
 const CREATE_TABLES =
     \\ CREATE TABLE VERSION
@@ -15,13 +15,14 @@ const CREATE_TABLES =
     \\ );
     \\ 
     \\ INSERT INTO VERSION(versionCode)
-    \\ VALUES (1);
+    \\ VALUES (2);
     \\ 
     \\ CREATE TABLE STREAMER
     \\ (
-    \\     idStreamer    TEXT PRIMARY KEY NOT NULL,
-    \\     loginStreamer TEXT             NOT NULL,
-    \\     nameStreamer  TEXT             NOT NULL
+    \\     idStreamer       TEXT PRIMARY KEY NOT NULL,
+    \\     loginStreamer    TEXT             NOT NULL,
+    \\     nameStreamer     TEXT             NOT NULL,
+    \\     imageUrlStreamer TEXT
     \\ );
     \\ 
     \\ CREATE TABLE STREAM
@@ -67,9 +68,20 @@ const CREATE_TABLES =
     \\ );
 ;
 
+const DROP_TABLES =
+    \\ DROP TABLE IF EXISTS VERSION;
+    \\ DROP TABLE IF EXISTS NAME_STREAM;
+    \\ DROP TABLE IF EXISTS VIEWER_COUNT_STREAM;
+    \\ DROP TABLE IF EXISTS IS_STREAMING_GAME;
+    \\ DROP TABLE IF EXISTS STREAM;
+    \\ DROP TABLE IF EXISTS STREAMER;
+    \\ DROP TABLE IF EXISTS GAME;
+;
+
 const Config = struct {
     token: []const u8,
     client_id: []const u8,
+    refresh_rate: u64,
     user_logins: []const User,
     webhook_url: []const u8,
 
@@ -89,10 +101,7 @@ const Config = struct {
     }
 };
 
-const User = struct {
-    user_login: []u8,
-    user_icon: []u8,
-};
+const User = struct { user_login: []u8 };
 
 pub fn main() anyerror!void {
     var db = try sqlite.Database.open("data.db");
@@ -104,8 +113,10 @@ pub fn main() anyerror!void {
 
     try createTables(&db);
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    var allocator = arena.allocator();
+    //var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+
+    var allocator = general_purpose_allocator.allocator();
 
     var config = try Config.fromFile(allocator, "config.json");
 
@@ -117,12 +128,23 @@ pub fn main() anyerror!void {
     try headers.put("Authorization", config.token);
     try headers.put("Client-Id", config.client_id);
 
-    try updateAlert(allocator, &client, &config, &headers);
+    try insertOrReplaceStreamers(allocator, &db, &client, &config, &headers);
+
+    while (true) {
+        var alertAllocator = std.heap.ArenaAllocator.init(allocator);
+        try updateAlert(alertAllocator.allocator(), &client, &config, &db, &headers);
+        alertAllocator.deinit();
+
+        std.log.info("waiting for {} ns", .{config.refresh_rate * std.time.ns_per_ms});
+        std.time.sleep(config.refresh_rate * std.time.ns_per_ms);
+    }
 
     client.deinit();
 
     try Client.cleanup();
-    arena.deinit();
+    if (general_purpose_allocator.deinit()) {
+        std.log.err("leaked bytes", .{});
+    }
 }
 
 pub fn createTables(db: *sqlite.Database) anyerror!void {
@@ -137,17 +159,28 @@ pub fn createTables(db: *sqlite.Database) anyerror!void {
         var code: isize = 0;
 
         try stm.fetch(.{&code});
+        stm.finalize();
 
         if (DATABASE_VERSION_CODE == code) {
             std.log.debug("Database already created", .{});
-            stm.finalize();
             return;
+        } else {
+            try db.exec(DROP_TABLES);
+            std.log.debug("Creating database", .{});
+
+            try db.exec(CREATE_TABLES);
         }
     }
     stm.finalize();
 }
 
-pub fn updateAlert(allocator: std.mem.Allocator, client: *Client, config: *Config, headers: *std.StringHashMap([]const u8)) anyerror!void {
+pub fn updateAlert(
+    allocator: std.mem.Allocator,
+    client: *Client,
+    config: *Config,
+    database: *sqlite.Database,
+    headers: *std.StringHashMap([]const u8),
+) anyerror!void {
     var request = std.ArrayList(u8).init(allocator);
 
     try request.appendSlice("https://api.twitch.tv/helix/streams?");
@@ -164,65 +197,217 @@ pub fn updateAlert(allocator: std.mem.Allocator, client: *Client, config: *Confi
 
     try request.append(0);
 
-    const streams: twitch.TwitchRes([]const twitch.Stream) = try client.getJSON(twitch.TwitchRes([]const twitch.Stream), @ptrCast([*:0]const u8, request.items), headers);
+    const streams: twitch.TwitchRes([]const twitch.Stream) = try client.getJSON(
+        twitch.TwitchRes([]const twitch.Stream),
+        @ptrCast([*:0]const u8, request.items),
+        headers,
+    );
 
     request.deinit();
 
-    std.log.info("{s}", .{streams});
-
     if (streams.data.len > 0) {
-        var embeds = try allocator.alloc(webhook.Embed, streams.data.len);
+        var embeds = std.ArrayList(webhook.Embed).init(allocator);
 
-        for (streams.data) |s, i| {
-            var viewer = std.ArrayList(u8).init(allocator);
-            try std.fmt.format(viewer.writer(), "{}", .{s.viewer_count});
-            var fields = [_]webhook.Field{
-                .{
-                    .name = "Viewer count",
-                    .value = viewer.items,
-                    .@"inline" = true,
-                },
-                .{
-                    .name = "Game name",
-                    .value = s.game_name,
-                    .@"inline" = true,
-                },
-            };
-
-            var thumbnail = try std.mem.replaceOwned(u8, allocator, s.thumbnail_url, "{width}", "1920");
-            thumbnail = try std.mem.replaceOwned(u8, allocator, thumbnail, "{height}", "1080");
-
-            var stream_url = std.ArrayList(u8).init(allocator);
-            _ = try stream_url.appendSlice("https://twitch.tv/");
-            _ = try stream_url.appendSlice(s.user_login);
-
-            var icon_url: []u8 = "";
-            for (config.user_logins) |u| {
-                if (std.mem.eql(u8, u.user_login, s.user_login)) {
-                    icon_url = u.user_icon;
-                    break;
-                }
+        for (streams.data) |s| {
+            if (try appendEmbed(allocator, &s, database)) |e| {
+                try embeds.append(e);
             }
-
-            embeds[i] = .{
-                .title = s.title,
-                .image = .{
-                    .url = thumbnail,
-                },
-                .author = .{
-                    .name = s.user_name,
-                    .url = stream_url.items,
-                    .icon_url = icon_url,
-                },
-                .color = 0xa970ff,
-                .fields = fields[0..],
-            };
         }
 
-        _ = try client.postJSON(config.webhook_url, webhook.Webhook{
-            .username = "Twitch",
-            .content = "Live alert",
-            .embeds = embeds,
-        }, null);
+        if (embeds.items.len > 0) {
+            _ = try client.postJSON(config.webhook_url, webhook.Webhook{
+                .username = "Twitch",
+                .content = "Live alert",
+                .embeds = embeds.items,
+            }, null);
+            embeds.deinit();
+        }
+    }
+}
+
+const VIEWER_COUNT_NAME = "Viewer count";
+
+fn appendEmbed(allocator: std.mem.Allocator, stream: *const twitch.Stream, db: *sqlite.Database) anyerror!?webhook.Embed {
+    if (!try streamExist(db, stream.id)) {
+        try insertStream(db, stream);
+        try insertMetadatas(db, stream);
+
+        var fields = std.ArrayList(webhook.Field).init(allocator); // TODO BETTER WAY
+        var viewer = std.ArrayList(u8).init(allocator);
+        try std.fmt.format(viewer.writer(), "{}", .{stream.viewer_count});
+
+        try fields.append(.{
+            .name = VIEWER_COUNT_NAME,
+            .value = viewer.toOwnedSlice(),
+            .@"inline" = true,
+        });
+        try fields.append(.{
+            .name = "Game name",
+            .value = stream.game_name,
+            .@"inline" = true,
+        });
+
+        var thumbnail = try std.mem.replaceOwned(u8, allocator, stream.thumbnail_url, "{width}", "1920");
+        thumbnail = try std.mem.replaceOwned(u8, allocator, thumbnail, "{height}", "1080");
+
+        var stream_url = std.ArrayList(u8).init(allocator);
+        _ = try stream_url.appendSlice("https://twitch.tv/");
+        _ = try stream_url.appendSlice(stream.user_login);
+
+        var icon_url: ?[]u8 = undefined;
+        var stm = try db.prepare("SELECT imageUrlStreamer FROM STREAMER WHERE idStreamer = ?");
+        try stm.bind(1, sqlite.U8Array.text(stream.user_id));
+        if (stm.next()) {
+            var res = sqlite.U8Array.text(undefined);
+            try stm.fetch(.{&res});
+
+            icon_url = try allocator.alloc(u8, res.text.len);
+            std.mem.copy(u8, icon_url.?, res.text);
+            stm.finalize();
+        } else {
+            icon_url = null;
+        }
+
+        return webhook.Embed{
+            .title = stream.title,
+            .image = .{
+                .url = thumbnail,
+            },
+            .author = .{
+                .name = stream.user_name,
+                .url = stream_url.items,
+                .icon_url = icon_url,
+            },
+            .color = 0xa970ff,
+            .fields = fields.toOwnedSlice(),
+        };
+    } else {
+        try insertMetadatas(db, stream);
+        return null;
+    }
+}
+
+fn streamExist(db: *sqlite.Database, streamId: []const u8) anyerror!bool {
+    var stm = try db.prepare("SELECT \"foo\" FROM STREAM WHERE idStream = ?");
+    try stm.bind(1, sqlite.U8Array.text(streamId));
+
+    const res = stm.next();
+    stm.finalize();
+
+    return res;
+}
+
+fn insertStream(db: *sqlite.Database, stream: *const twitch.Stream) anyerror!void {
+    var stm = try db.prepare(
+        "INSERT INTO STREAM(idStream, idStreamer, isMatureStream) VALUES(?, ?, ?)",
+    );
+
+    try stm.bind(1, sqlite.U8Array.text(stream.id));
+    try stm.bind(2, sqlite.U8Array.text(stream.user_id));
+    try stm.bind(3, @boolToInt(stream.is_mature));
+
+    try stm.exec();
+    stm.finalize();
+}
+
+pub fn insertMetadatas(db: *sqlite.Database, stream: *const twitch.Stream) anyerror!void {
+    var stm = try db.prepare(
+        "INSERT INTO VIEWER_COUNT_STREAM(viewerCount, dateViewerCount, idStream) VALUES(?, datetime(\"now\"), ?)",
+    );
+
+    try stm.bind(1, stream.viewer_count);
+    try stm.bind(2, sqlite.U8Array.text(stream.id));
+
+    try stm.exec();
+    stm.finalize();
+
+    if (try mustInsertName(db, stream)) {
+        std.log.debug("inserting name", .{});
+        stm = try db.prepare(
+            "INSERT INTO NAME_STREAM(nameStream, dateNameStream, idStream) VALUES(?, datetime(\"now\"), ?)",
+        );
+
+        try stm.bind(1, sqlite.U8Array.text(stream.title));
+        try stm.bind(2, sqlite.U8Array.text(stream.id));
+
+        try stm.exec();
+        stm.finalize();
+    }
+
+    stm = try db.prepare(
+        "INSERT OR IGNORE INTO GAME(gameId, gameName) VALUES(?, ?)",
+    );
+
+    try stm.bind(1, sqlite.U8Array.text(stream.game_id));
+    try stm.bind(2, sqlite.U8Array.text(stream.game_name));
+
+    try stm.exec();
+    stm.finalize();
+
+    stm = try db.prepare(
+        "INSERT INTO IS_STREAMING_GAME(gameId, streamId, dateGameStream) VALUES(?, ?, datetime(\"now\"))",
+    );
+
+    try stm.bind(1, sqlite.U8Array.text(stream.game_id));
+    try stm.bind(2, sqlite.U8Array.text(stream.id));
+
+    try stm.exec();
+    stm.finalize();
+}
+
+fn mustInsertName(db: *sqlite.Database, stream: *const twitch.Stream) anyerror!bool {
+    var stm = try db.prepare(
+        "SELECT nameStream  != ? FROM NAME_STREAM WHERE idStream = ? ORDER BY dateNameStream DESC LIMIT 1",
+    );
+
+    try stm.bind(1, sqlite.U8Array.text(stream.title));
+    try stm.bind(2, sqlite.U8Array.text(stream.id));
+
+    var res: c_int = 1;
+    if (stm.next()) {
+        try stm.fetch(.{&res});
+    }
+    stm.finalize();
+    return res == 1;
+}
+
+fn insertOrReplaceStreamers(
+    allocator: std.mem.Allocator,
+    db: *sqlite.Database,
+    client: *Client,
+    config: *const Config,
+    headers: *std.StringHashMap([]const u8),
+) anyerror!void {
+    var request = std.ArrayList(u8).init(allocator);
+
+    try request.appendSlice("https://api.twitch.tv/helix/users?");
+
+    {
+        var i: u8 = 0;
+        while (i < config.user_logins.len) : (i += 1) {
+            if (i != 0)
+                try request.append('&');
+            try request.appendSlice("login=");
+            try request.appendSlice(config.user_logins[i].user_login);
+        }
+    }
+
+    try request.append(0);
+
+    const streamers: twitch.TwitchRes([]const twitch.User) = try client.getJSON(
+        twitch.TwitchRes([]const twitch.User),
+        @ptrCast([*:0]const u8, request.items),
+        headers,
+    );
+
+    for (streamers.data) |streamer| {
+        var stm = try db.prepare("INSERT OR REPLACE INTO STREAMER(idStreamer, loginStreamer, nameStreamer, imageUrlStreamer) VALUES(?, ?, ?, ?)");
+        try stm.bind(1, sqlite.U8Array.text(streamer.id));
+        try stm.bind(2, sqlite.U8Array.text(streamer.login));
+        try stm.bind(3, sqlite.U8Array.text(streamer.display_name));
+        try stm.bind(4, sqlite.U8Array.text(streamer.profile_image_url));
+
+        try stm.exec();
+        stm.finalize();
     }
 }

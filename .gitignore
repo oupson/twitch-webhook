@@ -3,3 +3,6 @@ zig-out
 
 config.json
 *.db
+
+.vscode
+.vs

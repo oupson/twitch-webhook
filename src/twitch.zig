@@ -15,8 +15,15 @@ pub const Stream = struct {
     is_mature: bool,
 };
 
+pub const User = struct {
+    id: []const u8,
+    login: []const u8,
+    display_name: []const u8,
+    profile_image_url: []const u8,
+};
+
 pub const Pagination = struct { cursor: ?[]u8 = null };
 
 pub fn TwitchRes(comptime T: type) type {
-    return struct { data: T, pagination: Pagination };
+    return struct { data: T, pagination: ?Pagination  = null};
 }

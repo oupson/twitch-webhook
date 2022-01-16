@@ -75,7 +75,7 @@ pub const Statement = struct {
                 }
             },
             .Int, .ComptimeInt => {
-                var rc = sqlite3.sqlite3_bind_int(self.statement, @intCast(c_int, index), value);
+                var rc = sqlite3.sqlite3_bind_int(self.statement, @intCast(c_int, index),  @intCast(c_int, value));
                 if (rc != sqlite3.SQLITE_OK) {
                     std.log.err("failed to bind parameter: {s}", .{sqlite3.sqlite3_errmsg(self.db.db)});
                     return error.FailedToBindParameter;

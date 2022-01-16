@@ -37,6 +37,8 @@ pub const Client = struct {
     pub fn getJSON(self: *@This(), comptime T: type, url: [*:0]const u8, headers: ?*std.StringHashMap([]const u8)) anyerror!T {
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_URL, url) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
+        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_HTTPGET, @as(c_long, 1)) != cURL.CURLE_OK)
+            return error.CURLPerformFailed;
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_NOPROGRESS, @as(c_long, 1)) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_MAXREDIRS, @as(c_long, 50)) != cURL.CURLE_OK)
@@ -122,7 +124,6 @@ pub const Client = struct {
         var post_buffer = std.ArrayList(u8).init(self.allocator.*);
 
         try json.stringify(data, .{}, post_buffer.writer());
-        std.log.debug("stringify : {s}", .{post_buffer.items});
 
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_POST, @as(c_long, 1)) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
