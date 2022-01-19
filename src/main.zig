@@ -94,14 +94,38 @@ const Config = struct {
         var stat = try file.stat();
         const file_buffer = try allocator.alloc(u8, stat.size);
         _ = try file.readAll(file_buffer);
+        file.close();
 
         var stream = json.TokenStream.init(file_buffer);
 
-        return json.parse(@This(), &stream, .{ .allocator = allocator });
+        const res = json.parse(@This(), &stream, .{ .allocator = allocator });
+        allocator.free(file_buffer);
+
+        return res;
     }
 };
 
 const User = struct { user_login: []u8 };
+
+var wait_event = std.Thread.StaticResetEvent{};
+
+fn handler_fn(_: c_int) callconv(.C) void {
+    wait_event.set();
+}
+
+fn setupSigIntHandler() void {
+    const handler = std.os.Sigaction{
+        .handler = .{
+            .handler = handler_fn,
+        },
+        .mask = std.os.empty_sigset,
+        .flags = std.os.SA.RESETHAND,
+    };
+
+    if (std.os.linux.sigaction(std.os.SIG.INT, &handler, null) == -1) {
+        std.os.linux.perror("Failed to set signal");
+    }
+}
 
 pub fn main() anyerror!void {
     var db = try sqlite.Database.open("data.db");
@@ -111,9 +135,10 @@ pub fn main() anyerror!void {
         };
     }
 
+    setupSigIntHandler();
+
     try createTables(&db);
 
-    //var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
     var allocator = general_purpose_allocator.allocator();
@@ -130,15 +155,20 @@ pub fn main() anyerror!void {
 
     try insertOrReplaceStreamers(allocator, &db, &client, &config, &headers);
 
-    while (true) {
+    var loop = true;
+    while (loop) {
         var alertAllocator = std.heap.ArenaAllocator.init(allocator);
         try updateAlert(alertAllocator.allocator(), &client, &config, &db, &headers);
         alertAllocator.deinit();
 
-        std.log.info("waiting for {} ns", .{config.refresh_rate * std.time.ns_per_ms});
-        std.time.sleep(config.refresh_rate * std.time.ns_per_ms);
+        std.log.info("sleeping for {} ns", .{config.refresh_rate * std.time.ns_per_ms});
+        const res = wait_event.timedWait(config.refresh_rate * std.time.ns_per_ms);
+        loop = res == .timed_out;
     }
 
+    std.log.info("stopping ...", .{});
+
+    headers.deinit();
     client.deinit();
 
     try Client.cleanup();
@@ -210,22 +240,24 @@ pub fn updateAlert(
 
         for (streams.data) |s| {
             if (try appendEmbed(allocator, &s, database)) |e| {
+                std.log.info("{s}", .{s.title});
                 try embeds.append(e);
             }
         }
 
         if (embeds.items.len > 0) {
-            _ = try client.postJSON(config.webhook_url, webhook.Webhook{
+            var res = try client.postJSON(config.webhook_url, webhook.Webhook{
                 .username = "Twitch",
                 .content = "Live alert",
                 .embeds = embeds.items,
             }, null);
-            embeds.deinit();
+
+            client.allocator.free(res);
         }
+        embeds.deinit();
     }
 }
 
-const VIEWER_COUNT_NAME = "Viewer count";
 
 fn appendEmbed(allocator: std.mem.Allocator, stream: *const twitch.Stream, db: *sqlite.Database) anyerror!?webhook.Embed {
     if (!try streamExist(db, stream.id)) {
@@ -237,7 +269,7 @@ fn appendEmbed(allocator: std.mem.Allocator, stream: *const twitch.Stream, db: *
         try std.fmt.format(viewer.writer(), "{}", .{stream.viewer_count});
 
         try fields.append(.{
-            .name = VIEWER_COUNT_NAME,
+            .name = "Viewer count",
             .value = viewer.toOwnedSlice(),
             .@"inline" = true,
         });
@@ -322,7 +354,7 @@ pub fn insertMetadatas(db: *sqlite.Database, stream: *const twitch.Stream) anyer
     stm.finalize();
 
     if (try mustInsertName(db, stream)) {
-        std.log.debug("inserting name", .{});
+        std.log.debug("inserting name : {s} ({s})", .{stream.title, stream.id});
         stm = try db.prepare(
             "INSERT INTO NAME_STREAM(nameStream, dateNameStream, idStream) VALUES(?, datetime(\"now\"), ?)",
         );
