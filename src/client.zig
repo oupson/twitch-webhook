@@ -14,15 +14,23 @@ const ArrayListReader = struct {
 
 pub const Client = struct {
     ptr: *cURL.CURL,
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
 
-    pub fn init(allocator: *mem.Allocator) ?@This() {
-        const ptr = cURL.curl_easy_init() orelse return null;
+    pub fn init(allocator: mem.Allocator) anyerror!@This() {
+        const ptr = cURL.curl_easy_init() orelse return error.CURLEasyInitFailed;
 
-        return @This(){
+        var self = @This(){
             .ptr = ptr,
             .allocator = allocator,
         };
+
+        try self.restoreDefaultSettings();
+
+        return self;
+    }
+
+    pub fn deinit(self: *@This()) void {
+        cURL.curl_easy_cleanup(self.ptr);
     }
 
     pub fn globalInit() anyerror!void {
@@ -34,17 +42,26 @@ pub const Client = struct {
         cURL.curl_global_cleanup();
     }
 
-    pub fn getJSON(self: *@This(), comptime T: type, url: [*:0]const u8, headers: ?*std.StringHashMap([]const u8)) anyerror!T {
-        var response_buffer = std.ArrayList(u8).init(self.allocator.*);
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_URL, url) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_HTTPGET, @as(c_long, 1)) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
+    pub fn restoreDefaultSettings(self: *@This()) anyerror!void {
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_NOPROGRESS, @as(c_long, 1)) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_MAXREDIRS, @as(c_long, 50)) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_TCP_KEEPALIVE, @as(c_long, 1)) != cURL.CURLE_OK)
+            return error.CURLPerformFailed;
+
+        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_WRITEFUNCTION, writeToArrayListCallback) != cURL.CURLE_OK)
+            return error.CURLSetOptFailed;
+
+        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_READFUNCTION, readFromArrayListCallback) != cURL.CURLE_OK)
+            return error.CURLPerformFailed;
+    }
+
+    pub fn getJSON(self: *@This(), comptime T: type, url: [*:0]const u8, headers: ?*std.StringHashMap([]const u8)) anyerror!T {
+        var response_buffer = std.ArrayList(u8).init(self.allocator);
+        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_URL, url) != cURL.CURLE_OK)
+            return error.CURLPerformFailed;
+        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_HTTPGET, @as(c_long, 1)) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
 
         var header_slist: [*c]cURL.curl_slist = null;
@@ -69,9 +86,6 @@ pub const Client = struct {
                 return error.CURLSetOptFailed;
         }
 
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_WRITEFUNCTION, writeToArrayListCallback) != cURL.CURLE_OK)
-            return error.CURLSetOptFailed;
-
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_WRITEDATA, &response_buffer) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
 
@@ -81,10 +95,11 @@ pub const Client = struct {
         if (header_slist != null)
             cURL.curl_slist_free_all(header_slist);
 
-        var stream = json.TokenStream.init(response_buffer.toOwnedSlice());
+        var content = response_buffer.items;
+        var stream = json.TokenStream.init(content);
 
         @setEvalBranchQuota(10_000);
-        const res = json.parse(T, &stream, .{ .allocator = self.allocator.*, .ignore_unknown_fields = true });
+        const res = json.parse(T, &stream, .{ .allocator = self.allocator, .ignore_unknown_fields = true });
 
         response_buffer.deinit();
 
@@ -92,21 +107,13 @@ pub const Client = struct {
     }
 
     pub fn postJSON(self: *@This(), url: []const u8, data: anytype, headers: ?std.StringHashMap([]const u8)) anyerror![]const u8 {
-        var post_buffer = std.ArrayList(u8).init(self.allocator.*);
-        var response_buffer = std.ArrayList(u8).init(self.allocator.*);
+        var post_buffer = std.ArrayList(u8).init(self.allocator);
+        var response_buffer = std.ArrayList(u8).init(self.allocator);
 
         var rawUrl = try self.allocator.allocSentinel(u8, url.len, 0);
         std.mem.copy(u8, rawUrl, url);
 
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_URL, rawUrl.ptr) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_NOPROGRESS, @as(c_long, 1)) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_MAXREDIRS, @as(c_long, 50)) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_TCP_KEEPALIVE, @as(c_long, 1)) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_TCP_KEEPALIVE, @as(c_long, 1)) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
 
         var header_slist: [*c]cURL.curl_slist = null;
@@ -136,9 +143,6 @@ pub const Client = struct {
         }) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
 
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_READFUNCTION, readFromArrayListCallback) != cURL.CURLE_OK)
-            return error.CURLPerformFailed;
-
         if (header_slist != null) {
             if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_HTTPHEADER, header_slist) != cURL.CURLE_OK)
                 return error.CURLSetOptFailed;
@@ -146,9 +150,6 @@ pub const Client = struct {
             if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_HTTPHEADER, @as(c_long, 0)) != cURL.CURLE_OK)
                 return error.CURLSetOptFailed;
         }
-
-        if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_WRITEFUNCTION, writeToArrayListCallback) != cURL.CURLE_OK)
-            return error.CURLSetOptFailed;
 
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_WRITEDATA, &response_buffer) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
@@ -166,10 +167,6 @@ pub const Client = struct {
         response_buffer.deinit();
 
         return res;
-    }
-
-    pub fn deinit(self: *@This()) void {
-        cURL.curl_easy_cleanup(self.ptr);
     }
 };
 
