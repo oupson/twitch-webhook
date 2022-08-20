@@ -238,7 +238,7 @@ fn updateAlert(
 
     try request.append(0);
 
-    var streams: twitch.TwitchRes([]const twitch.Stream) = try client.getJSON(
+    var result: curl.Result(twitch.TwitchRes([]const twitch.Stream)) = try client.getJSON(
         twitch.TwitchRes([]const twitch.Stream),
         @ptrCast([*:0]const u8, request.items),
         headers,
@@ -246,29 +246,37 @@ fn updateAlert(
 
     request.deinit();
 
-    if (streams.data.len > 0) {
-        var embeds = std.ArrayList(webhook.Embed).init(allocator);
+    switch (result) {
+        .ok => |*streams| {
+            if (streams.data.len > 0) {
+                var embeds = std.ArrayList(webhook.Embed).init(allocator);
 
-        for (streams.data) |s| {
-            if (try appendEmbed(allocator, &s, database)) |e| {
-                std.log.debug("sending {s}", .{s.title});
-                try embeds.append(e);
+                for (streams.data) |s| {
+                    if (try appendEmbed(allocator, &s, database)) |e| {
+                        std.log.debug("sending {s}", .{s.title});
+                        try embeds.append(e);
+                    }
+                }
+
+                if (embeds.items.len > 0) {
+                    var res = try client.postJSON(config.webhook_url, webhook.Webhook{
+                        .username = "Twitch",
+                        .content = "Live alert",
+                        .embeds = embeds.items,
+                    }, null);
+
+                    client.allocator.free(res);
+                }
+                embeds.deinit();
             }
-        }
 
-        if (embeds.items.len > 0) {
-            var res = try client.postJSON(config.webhook_url, webhook.Webhook{
-                .username = "Twitch",
-                .content = "Live alert",
-                .embeds = embeds.items,
-            }, null);
-
-            client.allocator.free(res);
-        }
-        embeds.deinit();
+            streams.deinit(allocator);
+        },
+        .errorCode => |errorCode| {
+            std.log.err("Failed to get streams : error code {}\n", .{errorCode});
+            return error.CurlFailed;
+        },
     }
-
-    streams.deinit(allocator);
 }
 
 fn appendEmbed(allocator: std.mem.Allocator, stream: *const twitch.Stream, db: *sqlite.Database) anyerror!?webhook.Embed {
@@ -442,22 +450,30 @@ fn insertOrReplaceStreamers(
 
     try request.append(0);
 
-    var streamers: twitch.TwitchRes([]const twitch.User) = try client.getJSON(
+    var result: curl.Result(twitch.TwitchRes([]const twitch.User)) = try client.getJSON(
         twitch.TwitchRes([]const twitch.User),
         @ptrCast([*:0]const u8, request.items),
         headers,
     );
 
-    for (streamers.data) |streamer| {
-        var stm = try db.prepare("INSERT OR REPLACE INTO STREAMER(idStreamer, loginStreamer, nameStreamer, imageUrlStreamer) VALUES(?, ?, ?, ?)");
-        try stm.bind(1, sqlite.U8Array.text(streamer.id));
-        try stm.bind(2, sqlite.U8Array.text(streamer.login));
-        try stm.bind(3, sqlite.U8Array.text(streamer.display_name));
-        try stm.bind(4, sqlite.U8Array.text(streamer.profile_image_url));
+    switch (result) {
+        .ok => |*streamers| {
+            for (streamers.data) |streamer| {
+                var stm = try db.prepare("INSERT OR REPLACE INTO STREAMER(idStreamer, loginStreamer, nameStreamer, imageUrlStreamer) VALUES(?, ?, ?, ?)");
+                try stm.bind(1, sqlite.U8Array.text(streamer.id));
+                try stm.bind(2, sqlite.U8Array.text(streamer.login));
+                try stm.bind(3, sqlite.U8Array.text(streamer.display_name));
+                try stm.bind(4, sqlite.U8Array.text(streamer.profile_image_url));
 
-        try stm.exec();
-        stm.finalize();
+                try stm.exec();
+                stm.finalize();
+            }
+
+            streamers.deinit(allocator);
+        },
+        .errorCode => |errorCode| {
+            std.log.err("Failed to get streamers : error code {}\n", .{errorCode});
+            return error.CurlFailed;
+        },
     }
-
-    streamers.deinit(allocator);
 }

@@ -12,6 +12,15 @@ const ArrayListReader = struct {
     position: usize,
 };
 
+const ResultTag = enum { ok, errorCode };
+
+pub fn Result(comptime T: type) type {
+    return union(ResultTag) {
+        ok: T,
+        errorCode: c_long,
+    };
+}
+
 pub const Client = struct {
     ptr: *cURL.CURL,
     allocator: mem.Allocator,
@@ -57,7 +66,7 @@ pub const Client = struct {
             return error.CURLPerformFailed;
     }
 
-    pub fn getJSON(self: *@This(), comptime T: type, url: [*:0]const u8, headers: ?*std.StringHashMap([]const u8)) anyerror!T {
+    pub fn getJSON(self: *@This(), comptime T: type, url: [*:0]const u8, headers: ?*std.StringHashMap([]const u8)) anyerror!Result(T) {
         var response_buffer = std.ArrayList(u8).init(self.allocator);
         if (cURL.curl_easy_setopt(self.ptr, cURL.CURLOPT_URL, url) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
@@ -92,17 +101,27 @@ pub const Client = struct {
         if (cURL.curl_easy_perform(self.ptr) != cURL.CURLE_OK)
             return error.CURLPerformFailed;
 
+        var httpCode: c_long = undefined;
+        if (cURL.curl_easy_getinfo(self.ptr, cURL.CURLINFO_RESPONSE_CODE, &httpCode) != cURL.CURLE_OK)
+            return error.CURLPerformFailed;
+
         if (header_slist != null)
             cURL.curl_slist_free_all(header_slist);
 
-        var content = response_buffer.items;
-        var stream = json.TokenStream.init(content);
+        if (httpCode == 200) {
+            var content = response_buffer.items;
+            var stream = json.TokenStream.init(content);
 
-        @setEvalBranchQuota(10_000);
-        const res = json.parse(T, &stream, .{ .allocator = self.allocator, .ignore_unknown_fields = true });
+            @setEvalBranchQuota(10_000);
+            const res = try json.parse(T, &stream, .{ .allocator = self.allocator, .ignore_unknown_fields = true });
 
-        response_buffer.deinit();
-        return res;
+            response_buffer.deinit();
+            return Result(T){ .ok = res };
+        } else {
+            response_buffer.deinit();
+
+            return Result(T){ .errorCode = httpCode };
+        }
     }
 
     pub fn postJSON(self: *@This(), url: []const u8, data: anytype, headers: ?std.StringHashMap([]const u8)) anyerror![]const u8 {
