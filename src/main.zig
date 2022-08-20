@@ -1,7 +1,7 @@
 const std = @import("std");
 const json = std.json;
 
-const Client = @import("client.zig").Client;
+const Client = @import("curl.zig").Client;
 const App = @import("app.zig");
 
 pub var app: ?App = null;

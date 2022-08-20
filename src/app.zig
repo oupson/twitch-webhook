@@ -4,8 +4,10 @@ const json = std.json;
 
 const sqlite = @import("sqlite.zig");
 const twitch = @import("twitch.zig");
-const Client = @import("client.zig").Client;
+const curl = @import("curl.zig");
 const webhook = @import("webhook.zig");
+
+const Client = curl.Client;
 
 const Config = struct {
     token: []const u8,

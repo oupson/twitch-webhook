@@ -102,7 +102,6 @@ pub const Client = struct {
         const res = json.parse(T, &stream, .{ .allocator = self.allocator, .ignore_unknown_fields = true });
 
         response_buffer.deinit();
-
         return res;
     }
 
